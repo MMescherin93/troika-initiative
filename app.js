@@ -359,6 +359,11 @@ function addParticipant(s, name, type, init) {
 /* ---------- 6. Хранилище -------------------------------------------------- */
 
 const mode = { obr: false, gm: true, connecting: true };
+
+// Находимся ли мы во встроенном окне (iframe Owlbear Rodeo)
+const embedded = (function () {
+  try { return window.self !== window.top; } catch { return true; }
+})();
 let OBR = null;
 let state = newState();
 
@@ -443,7 +448,13 @@ function render() {
 
   // --- режим работы ---
   if (mode.connecting) els.mode.textContent = "подключение…";
-  else if (!mode.obr) els.mode.textContent = "автономный режим · сохраняется в браузере";
+  else if (!mode.obr) {
+    // Внутри Owlbear Rodeo автономный режим — это не норма, а признак того,
+    // что SDK не подключился: тогда игроки ваши ходы не увидят.
+    els.mode.textContent = embedded
+      ? "⚠ SDK не подключился — автономный режим"
+      : "автономный режим · сохраняется в браузере";
+  }
   else if (gm) els.mode.textContent = "Ведущий · состояние видно игрокам";
   else els.mode.textContent = "только просмотр · управляет Ведущий";
 
@@ -734,9 +745,13 @@ async function connectOBR() {
         catch { res(null); }
       }), TIMEOUT_MS, null);
 
-      try {
-        mode.gm = (await withTimeout(OBR.player.getRole(), TIMEOUT_MS, "PLAYER")) === "GM";
-      } catch { mode.gm = false; }
+      // Роль и состояние сцены запрашиваем одновременно: так панель
+      // подключается вдвое быстрее.
+      const [role, remote] = await Promise.all([
+        withTimeout(Promise.resolve().then(() => OBR.player.getRole()), TIMEOUT_MS, "PLAYER"),
+        loadState(),
+      ]);
+      mode.gm = role === "GM";
 
       // Если Ведущего разжаловали в игрока — сразу блокируем кнопки
       try {
@@ -761,7 +776,6 @@ async function connectOBR() {
         }
       } catch (e) { console.warn("[стек] не подписались на метаданные сцены:", e); }
 
-      const remote = await loadState();
       // Если мы уже успели поработать в автономном режиме, пока ждали OBR, —
       // не затираем эти данные пустым состоянием сцены, а наоборот отправим их туда.
       if (!isDefault(state) && isDefault(remote)) await persist();
