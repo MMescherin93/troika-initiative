@@ -1,0 +1,21 @@
+{
+  "name": "Стек инициативы Тройка!",
+  "version": "1.0.0",
+  "manifest_version": 1,
+  "description": "Трекер инициативы по правилам «Тройки!»: сборка Стека, жетоны, раунды, отсрочка и прицеливание.",
+  "author": "MMescherin93",
+  "icon": "/troika-initiative/icon.svg",
+  "permissions": [
+    {
+      "name": "clipboard-write",
+      "reason": "Кнопка «Показать / копировать» кладёт состояние трекера в буфер обмена."
+    }
+  ],
+  "action": {
+    "title": "Стек инициативы",
+    "icon": "/troika-initiative/icon.svg",
+    "popover": "/troika-initiative/index.html",
+    "width": 900,
+    "height": 760
+  }
+}

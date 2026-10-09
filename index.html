@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Тройка! — Стек инициативы</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+
+  <!-- Шапка: название, номер раунда, режим работы -->
+  <header class="top">
+    <div class="brand"><b>ТРОЙКА!</b><span>стек инициативы</span></div>
+    <div class="round-box">Раунд <span id="round">1</span></div>
+    <div class="mode" id="mode">подключение…</div>
+  </header>
+
+  <main>
+
+    <!-- Вытянутый жетон -->
+    <section class="stage">
+      <div class="token" id="token">СТЕК</div>
+      <div class="hint" id="hint">Нажмите «Вытянуть жетон», чтобы определить, кто ходит.</div>
+    </section>
+
+    <!-- Кнопки управления -->
+    <section class="actions">
+      <button class="btn primary" id="btnDraw">Вытянуть жетон</button>
+      <button class="btn" id="btnCommit">Ход завершён</button>
+      <button class="btn" id="btnReturn" title="Отсрочка: участник отказался действовать, жетон возвращается в Стек (правила 6.4)">Вернуть в Стек (6.4)</button>
+      <button class="btn" id="btnUndo">Отменить последнее</button>
+      <button class="btn" id="btnNewRound">Новый раунд</button>
+      <button class="btn aim" id="btnAim">Прицелиться (6.2.2)</button>
+    </section>
+
+    <!-- Сколько жетонов сейчас лежит в Стеке -->
+    <section class="stackinfo" id="stackinfo"></section>
+
+    <!-- Список участников -->
+    <section class="panel">
+      <h2>Участники</h2>
+      <ul id="list" class="list"></ul>
+      <p class="empty" id="empty">Пока никого нет. Добавьте персонажей и врагов ниже — жетоны посчитаются сами.</p>
+    </section>
+
+    <!-- Добавление участника -->
+    <section class="panel add">
+      <h2>Добавить</h2>
+      <div class="add-row">
+        <input id="fName" type="text" placeholder="Имя" maxlength="40" autocomplete="off">
+        <select id="fType">
+          <option value="pc">Персонаж</option>
+          <option value="henchman">Приспешник</option>
+          <option value="enemy">Враг</option>
+        </select>
+        <input id="fInit" type="number" min="1" max="99" value="2" title="Значение Инициативы противника (правила 5.1.2)">
+        <button class="btn" id="btnAdd">Добавить</button>
+      </div>
+      <p class="note" id="addNote">Персонажам даётся 2 жетона, приспешникам — 1, врагам — столько, каково их значение Инициативы (5.1.1–5.1.2, 5.4).</p>
+    </section>
+
+    <!-- Лента событий -->
+    <section class="panel">
+      <h2>Лента</h2>
+      <ul id="log" class="log"></ul>
+    </section>
+
+    <!-- Экспорт / импорт / сброс -->
+    <section class="panel data">
+      <h2><button class="btn small" id="btnData">Данные ▸</button></h2>
+      <div id="dataPanel" class="hidden">
+        <textarea id="dataArea" spellcheck="false" placeholder="Здесь появится JSON состояния. Можно скопировать и куда-нибудь сохранить, а потом вставить обратно."></textarea>
+        <div class="btn-row">
+          <button class="btn small" id="btnExport">Показать / копировать</button>
+          <button class="btn small" id="btnImport">Загрузить из текста</button>
+          <button class="btn small danger" id="btnReset">Сбросить всё</button>
+        </div>
+        <p class="note" id="dataNote"></p>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Яркое объявление о конце раунда -->
+  <div class="banner hidden" id="banner">
+    <div class="banner-title">ЖЕТОН КОНЦА РАУНДА</div>
+    <div class="banner-sub" id="bannerSub"></div>
+    <div class="banner-tip">Все жетоны вернулись в Стек. Проверки утопления, горения, яда и кровотечения — сейчас (7.9.2).</div>
+  </div>
+
+  <!-- Мелкое уведомление -->
+  <div class="toast hidden" id="toast"></div>
+
+  <script type="module" src="app.js"></script>
+</body>
+</html>
