@@ -63,9 +63,13 @@ function asText(v, def, max) {
   return t || def;
 }
 
+// Гонка «успеть или вернуть запасное значение».
+// Никогда не отдаёт отказ: упавший вызов превращается в fallback,
+// иначе одна ошибка Owlbear Rodeo убивала бы весь запуск.
 function withTimeout(promise, ms, fallback) {
+  const safe = Promise.resolve(promise).then((v) => v, () => fallback);
   return Promise.race([
-    promise,
+    safe,
     new Promise((res) => setTimeout(() => res(fallback), ms)),
   ]);
 }
@@ -354,14 +358,14 @@ function addParticipant(s, name, type, init) {
 
 /* ---------- 6. Хранилище -------------------------------------------------- */
 
-const mode = { obr: false, gm: true };
+const mode = { obr: false, gm: true, connecting: true };
 let OBR = null;
 let state = newState();
 
 async function loadSDK() {
   try {
     // Если CDN недоступен или тормозит — не висим, а работаем автономно
-    const mod = await withTimeout(import(SDK_URL), TIMEOUT_MS, null);
+    const mod = await withTimeout(import(SDK_URL).catch(() => null), TIMEOUT_MS, null);
     if (!mod) return null;
     return mod.default || mod;
   } catch (e) {
@@ -438,7 +442,8 @@ function render() {
   els.round.textContent = state.round;
 
   // --- режим работы ---
-  if (!mode.obr) els.mode.textContent = "автономный режим · сохраняется в браузере";
+  if (mode.connecting) els.mode.textContent = "подключение…";
+  else if (!mode.obr) els.mode.textContent = "автономный режим · сохраняется в браузере";
   else if (gm) els.mode.textContent = "Ведущий · состояние видно игрокам";
   else els.mode.textContent = "только просмотр · управляет Ведущий";
 
@@ -675,48 +680,99 @@ function bindUI() {
 
 /* ---------- 10. Запуск ---------------------------------------------------- */
 
-async function boot() {
-  collectElements();
+// Показываем ошибку прямо в панели — иначе её никто не увидит,
+// а окно консоли у расширений открыть неудобно.
+function showFatal(err) {
+  const msg = (err && err.message) ? err.message : String(err);
+  console.error("[стек] Ошибка запуска:", err);
+  const modeEl = document.getElementById("mode");
+  if (modeEl) modeEl.textContent = "ошибка запуска";
+  const hintEl = document.getElementById("hint");
+  if (hintEl) hintEl.textContent = "Ошибка запуска: " + msg;
+}
 
-  OBR = await loadSDK();
+// Пустое состояние — ничего ещё не настроили
+function isDefault(s) {
+  return s.round === 1 && s.participants.length === 0 &&
+         s.history.length === 0 && s.log.length === 0 &&
+         s.endLeft && s.current === null;
+}
 
-  // Внутри Owlbear Rodeo — держим состояние в метаданных сцены
-  if (OBR && OBR.isAvailable) {
-    await withTimeout(new Promise((res) => {
-      if (OBR.isReady) res();
-      else OBR.onReady(res);
-    }), TIMEOUT_MS, null);
-
-    mode.obr = true;
-    mode.gm = false;
-    try {
-      mode.gm = (await withTimeout(OBR.player.getRole(), TIMEOUT_MS, "PLAYER")) === "GM";
-    } catch { mode.gm = false; }
-
-    // Если Ведущего разжаловали в игрока — сразу блокируем кнопки
-    OBR.player.onChange((p) => {
-      if (!p || !p.role) return;
-      mode.gm = p.role === "GM";
-      render();
-    });
-
-    // Игроки узнают о новых ходах отсюда
-    OBR.scene.onMetadataChange((meta) => {
-      const raw = meta && meta[META_KEY];
-      if (!raw) return;
-      state = sanitize(raw);
-      render();
-    });
-  } else {
-    // Открыли просто в браузере — работаем на localStorage
-    mode.obr = false;
-    mode.gm = true;
-    OBR = null;
+function boot() {
+  // Интерфейс поднимаем сразу, не дожидаясь Owlbear Rodeo:
+  // иначе первые секунды кнопки просто не отвечают.
+  try {
+    collectElements();
+    bindUI();
+    mode.connecting = true;
+    render();
+  } catch (e) {
+    showFatal(e);
+    return;
   }
+  connectOBR();
+}
 
-  state = await loadState();
-  bindUI();
-  render();
+async function connectOBR() {
+  try {
+    const sdk = await loadSDK();
+
+    if (!sdk || !sdk.isAvailable) {
+      // Открыли просто в браузере — работаем на localStorage
+      mode.obr = false;
+      mode.gm = true;
+      OBR = null;
+      state = await loadState();
+    } else {
+      OBR = sdk;
+      mode.obr = true;
+      mode.gm = false;
+
+      // SDK может быть ещё не готов — ждём, но не дольше TIMEOUT_MS
+      await withTimeout(new Promise((res) => {
+        try { if (OBR.isReady) res(); else OBR.onReady(res); }
+        catch { res(null); }
+      }), TIMEOUT_MS, null);
+
+      try {
+        mode.gm = (await withTimeout(OBR.player.getRole(), TIMEOUT_MS, "PLAYER")) === "GM";
+      } catch { mode.gm = false; }
+
+      // Если Ведущего разжаловали в игрока — сразу блокируем кнопки
+      try {
+        if (typeof OBR.player.onChange === "function") {
+          OBR.player.onChange((p) => {
+            if (!p || !p.role) return;
+            mode.gm = p.role === "GM";
+            render();
+          });
+        }
+      } catch (e) { console.warn("[стек] не подписались на смену роли:", e); }
+
+      // Игроки узнают о новых ходах отсюда
+      try {
+        if (typeof OBR.scene.onMetadataChange === "function") {
+          OBR.scene.onMetadataChange((meta) => {
+            const raw = meta && meta[META_KEY];
+            if (!raw) return;
+            state = sanitize(raw);
+            render();
+          });
+        }
+      } catch (e) { console.warn("[стек] не подписались на метаданные сцены:", e); }
+
+      const remote = await loadState();
+      // Если мы уже успели поработать в автономном режиме, пока ждали OBR, —
+      // не затираем эти данные пустым состоянием сцены, а наоборот отправим их туда.
+      if (!isDefault(state) && isDefault(remote)) await persist();
+      else state = remote;
+    }
+  } catch (e) {
+    showFatal(e);
+  } finally {
+    mode.connecting = false;
+    render();
+  }
 }
 
 boot();
