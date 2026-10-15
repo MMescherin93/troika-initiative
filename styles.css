@@ -260,6 +260,33 @@ main {
   white-space: nowrap;
 }
 
+/* Поле Инициативы в строке участника (5.1.1 / 5.1.2) */
+.inil {
+  font-size: 12px;
+  color: var(--muted);
+  white-space: nowrap;
+}
+
+.ini {
+  width: 54px;
+  height: 28px;
+  border: 2px solid var(--ink);
+  background: #fff;
+  font-family: Consolas, Menlo, monospace;
+  font-size: 15px;
+  text-align: center;
+  padding: 0 2px;
+  border-radius: 4px;
+  -moz-appearance: textfield;
+}
+
+.ini::-webkit-outer-spin-button,
+.ini::-webkit-inner-spin-button { -webkit-appearance: none; margin: 0; }
+.ini:focus { outline: none; border-color: var(--accent); background: var(--yellow); }
+.ini:disabled { background: var(--bg); color: var(--muted); cursor: not-allowed; }
+
+input:disabled, select:disabled { color: var(--muted); cursor: not-allowed; }
+
 .tk {
   font-size: 15px;
   font-family: Consolas, Menlo, monospace;

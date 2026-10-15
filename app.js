@@ -5,7 +5,9 @@
    По правилам «Тройки!» инициатива — это не бросок, а ёмкость с жетонами
    (раздел 5 правил, https://troika.wishport.online/initiative):
 
-     5.1.1  Каждый персонаж получает 2 жетона своего цвета.
+     5.1.1  Каждый персонаж получает 2 жетона своего цвета. Здесь это
+            значение можно изменить для конкретного персонажа — но по
+            умолчанию остаётся 2.
      5.1.2  Враги добавляют столько жетонов, каково их значение Инициативы.
      5.1.3  Плюс один жетон уникального цвета — Жетон Конца раунда.
      5.2    Ведущий вынимает жетон наугад — тот и ходит.
@@ -92,6 +94,22 @@ function nowTime() {
   return new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 }
 
+// Инициатива персонажа (5.1.1): по умолчанию 2. Пустое, нулевое или
+// мусорное значение считаем «не задано» — тогда действует двойка.
+function pcInit(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 1) return 2;
+  return Math.max(1, Math.min(99, Math.round(n)));
+}
+
+// Инициатива участника зависит от типа: у персонажа — своя (по умолчанию 2),
+// у врага — заданная Ведущим (5.1.2), приспешнику она не нужна (5.4).
+function initValue(type, v) {
+  if (type === "pc") return pcInit(v);
+  if (v === "" || v === null || v === undefined) return 2;
+  return clampNum(v, 2, 1, 99);
+}
+
 // Русские числительные: 1 жетон, 2 жетона, 5 жетонов
 function plural(n, one, few, many) {
   const m10 = n % 10, m100 = n % 100;
@@ -134,7 +152,7 @@ function sanitize(raw) {
         id,
         name: asText(src.name, "Без имени", 40),
         type,
-        init: clampNum(src.init, 2, 0, 99),
+        init: initValue(type, src.init),
         alive: src.alive !== false,
         aiming: src.aiming === true,
         color: asText(src.color, "", 20) || colorFor(type, s.participants.length),
@@ -159,7 +177,11 @@ function sanitize(raw) {
     s.history = raw.history
       .filter((e) => e && typeof e === "object" && typeof e.actor === "string")
       .slice(-MAX_HISTORY)
-      .map((e) => ({ actor: e.actor.slice(0, 40), snap: sanitizeSnap(e.snap, s) }));
+      .map((e) => ({
+        actor: e.actor.slice(0, 40),
+        label: asText(e.label, "", 160),
+        snap: sanitizeSnap(e.snap, s),
+      }));
   }
 
   if (Array.isArray(raw.log)) {
@@ -177,22 +199,40 @@ function sanitize(raw) {
   return s;
 }
 
+// Приводит снимок к виду текущего Стека: лишние id выбрасываем,
+// значения проверяем. Отсутствующие поля просто не трогаем.
 function sanitizeSnap(snap, s) {
-  const out = { round: s.round, endLeft: s.endLeft, tokens: {}, aiming: {} };
+  const out = {};
   if (!snap || typeof snap !== "object") return out;
-  out.round = clampNum(snap.round, s.round, 1, 9999);
-  out.endLeft = snap.endLeft !== false;
+  if ("round" in snap) out.round = clampNum(snap.round, s.round, 1, 9999);
+  if ("endLeft" in snap) out.endLeft = snap.endLeft !== false;
   if (snap.tokens && typeof snap.tokens === "object") {
+    out.tokens = {};
     for (const p of s.participants) {
-      if (p.id in snap.tokens) {
-        out.tokens[p.id] = clampNum(snap.tokens[p.id], p.tokens, 0, 99);
-      }
+      if (p.id in snap.tokens) out.tokens[p.id] = clampNum(snap.tokens[p.id], p.tokens, 0, 99);
     }
   }
   if (snap.aiming && typeof snap.aiming === "object") {
+    out.aiming = {};
     for (const p of s.participants) {
       if (p.id in snap.aiming) out.aiming[p.id] = snap.aiming[p.id] === true;
     }
+  }
+  // Значения Инициативы — чтобы отмена вернула и их тоже
+  if (snap.init && typeof snap.init === "object") {
+    out.init = {};
+    for (const p of s.participants) {
+      if (p.id in snap.init) out.init[p.id] = initValue(p.type, snap.init[p.id]);
+    }
+  }
+  // Вытянутый жетон на момент снимка
+  if ("current" in snap) {
+    const c = snap.current;
+    out.current = c && typeof c === "object"
+      ? (asText(c.id, "", 40) === END_ID || byId(s, asText(c.id, "", 40))
+          ? { id: asText(c.id, "", 40), double: c.double === true }
+          : null)
+      : null;
   }
   return out;
 }
@@ -207,7 +247,7 @@ function logAdd(s, text, kind) {
 // Сколько жетонов даёт этот участник (5.1.1, 5.1.2, 5.4)
 function tokensFor(p) {
   if (!p.alive) return 0;
-  if (p.type === "pc") return 2;
+  if (p.type === "pc") return pcInit(p.init);
   if (p.type === "henchman") return 1;
   return Math.max(0, Math.min(99, p.init));
 }
@@ -232,24 +272,68 @@ function counts(s) {
 }
 
 // Снимок Стека перед вытягиванием — чтобы отмена была точной
-function snapshot(s) {
-  const tokens = {}, aiming = {};
-  s.participants.forEach((p) => { tokens[p.id] = p.tokens; aiming[p.id] = !!p.aiming; });
-  return { round: s.round, endLeft: s.endLeft, tokens, aiming };
+// Снимок ТОЛЬКО тех полей, которые собрались поменять.
+// Так отмена одной операции не откатывает чужие: например, возврат жетона
+// не трогает изменение Инициативы, сделанное после вытягивания.
+//   fields: { round, endLeft, current, tokens, aiming, init }
+//   для tokens/aiming/init — массив id участников или "all".
+function snapBefore(s, fields) {
+  const snap = {};
+  if ("round" in fields) snap.round = s.round;
+  if ("endLeft" in fields) snap.endLeft = s.endLeft;
+  if ("current" in fields) {
+    snap.current = s.current ? { id: s.current.id, double: s.current.double === true } : null;
+  }
+  for (const key of ["tokens", "aiming", "init"]) {
+    if (!(key in fields)) continue;
+    const spec = fields[key];
+    const list = spec === "all" ? s.participants.slice()
+                                : s.participants.filter((p) => spec.includes(p.id));
+    snap[key] = {};
+    list.forEach((p) => {
+      snap[key][p.id] = key === "tokens" ? p.tokens
+                      : key === "aiming" ? !!p.aiming
+                      : p.init;
+    });
+  }
+  return snap;
 }
 
 function restore(s, snap) {
   if (!snap) return;
-  s.round = clampNum(snap.round, s.round, 1, 9999);
-  s.endLeft = snap.endLeft !== false;
-  s.participants.forEach((p) => {
-    if (p.id in snap.tokens) p.tokens = Math.min(clampNum(snap.tokens[p.id], p.tokens, 0, 99), tokensFor(p));
-    if (p.id in snap.aiming) p.aiming = snap.aiming[p.id] === true;
-  });
+  if ("round" in snap) s.round = clampNum(snap.round, s.round, 1, 9999);
+  if ("endLeft" in snap) s.endLeft = snap.endLeft !== false;
+
+  // Инициативу возвращаем раньше жетонов: от неё зависит, сколько жетонов
+  // вообще может быть у участника.
+  if (snap.init) {
+    for (const p of s.participants) {
+      if (p.id in snap.init) p.init = initValue(p.type, snap.init[p.id]);
+    }
+  }
+  if (snap.tokens) {
+    for (const p of s.participants) {
+      if (p.id in snap.tokens) {
+        p.tokens = Math.min(clampNum(snap.tokens[p.id], p.tokens, 0, 99), tokensFor(p));
+      }
+    }
+  }
+  if (snap.aiming) {
+    for (const p of s.participants) {
+      if (p.id in snap.aiming) p.aiming = snap.aiming[p.id] === true;
+    }
+  }
+  // Вытянутый жетон: есть ли он ещё в списке (участника могли удалить)
+  if ("current" in snap) {
+    const c = snap.current;
+    s.current = c && typeof c === "object" && (c.id === END_ID || byId(s, c.id))
+      ? { id: c.id, double: c.double === true }
+      : null;
+  }
 }
 
-function pushHistory(s, actor, snap) {
-  s.history.push({ actor, snap });
+function pushHistory(s, actor, snap, label) {
+  s.history.push({ actor, label: label || "", snap });
   if (s.history.length > MAX_HISTORY) s.history = s.history.slice(-MAX_HISTORY);
 }
 
@@ -271,7 +355,11 @@ function drawToken(s) {
   if (actor === null && s.endLeft) actor = END_ID;
   if (actor === null) return null;
 
-  const snap = snapshot(s);
+  const snap = actor === END_ID
+    // Конец раунда пересобирает весь Стек и двигает раунд (5.3)
+    ? snapBefore(s, { round: 1, endLeft: 1, tokens: "all", current: 1 })
+    // Обычный жетон тратит только свой жетон и сбрасывает прицел
+    : snapBefore(s, { tokens: [actor], aiming: [actor], current: 1 });
   pushHistory(s, actor, snap);
 
   // 5.3 — Жетон Конца раунда
@@ -301,12 +389,34 @@ function drawToken(s) {
   return { kind: "turn", p, double };
 }
 
-// 6.4 Отсрочка + отмена последнего вытягивания
+// Является ли запись истории именно вытягиванием жетона
+// (правки инициативы и «Новый раунд» — нет)
+function isDrawEntry(e) {
+  return !!e && !e.label && e.actor !== "NEWROUND";
+}
+
+// 6.4 Отсрочка + отмена последнего действия
 function undoLast(s) {
   const e = s.history.pop();
   if (!e) return null;
+  restore(s, e.snap);                       // вернёт жетоны, раунд, инициативу и жетон
+  const who = e.actor === "NEWROUND" ? "Новый раунд"
+            : e.actor === END_ID ? "Жетон Конца раунда"
+            : (byId(s, e.actor)?.name || "жетон");
+  logAdd(s, e.label ? `Отменено: ${e.label}` : `Возвращено в Стек: ${who}`, "back");
+  return e;
+}
+
+// 6.4 Отсрочка: кнопка «Вернуть жетон» должна возвращать именно жетон,
+// даже если сверху лежит более свежая правка (например, изменение инициативы).
+function returnToken(s) {
+  let idx = -1;
+  for (let k = s.history.length - 1; k >= 0; k--) {
+    if (isDrawEntry(s.history[k])) { idx = k; break; }
+  }
+  if (idx < 0) return null;
+  const e = s.history.splice(idx, 1)[0];
   restore(s, e.snap);
-  s.current = null;
   const who = e.actor === END_ID ? "Жетон Конца раунда" : (byId(s, e.actor)?.name || "жетон");
   logAdd(s, `Возвращено в Стек: ${who}`, "back");
   return e;
@@ -322,7 +432,7 @@ function commitTurn(s) {
 
 // Ручной новый раунд (если Ведущий решил не ждать Жетона Конца раунда)
 function newRound(s) {
-  pushHistory(s, "NEWROUND", snapshot(s));
+  pushHistory(s, "NEWROUND", snapBefore(s, { round: 1, endLeft: 1, tokens: "all", current: 1 }));
   s.round++;
   rebuild(s);
   s.current = null;
@@ -344,7 +454,7 @@ function addParticipant(s, name, type, init) {
     id: uid(),
     name: name.slice(0, 40),
     type,
-    init: type === "enemy" ? clampNum(init, 2, 1, 99) : 0,
+    init: initValue(type, init),
     alive: true,
     aiming: false,
     color: colorFor(type, s.participants.length),
@@ -474,7 +584,8 @@ function render() {
     } else if (curP.type === "henchman") {
       els.hint.innerHTML = "Жетон приспешника. <b>Ведущий выбирает, кто именно</b> из них ходит (5.4).";
     } else {
-      els.hint.innerHTML = "Жетон персонажа — <b>свой цвет у каждого</b> (5.1.1). Обычно это один ход.";
+      els.hint.innerHTML = "Жетон персонажа — <b>свой цвет у каждого</b> (5.1.1). " +
+        "Жетонов у него столько, какова Инициатива — обычно 2, и каждый даёт один ход.";
     }
   } else {
     els.token.textContent = "СТЕК";
@@ -493,6 +604,12 @@ function render() {
   els.btnReturn.disabled = !gm || !current;
   els.btnUndo.disabled = !gm || state.history.length === 0;
   els.btnNewRound.disabled = !gm;
+
+  // Игроки только смотрят: форма добавления и правка — у Ведущего
+  els.btnAdd.disabled = !gm;
+  els.fName.disabled = !gm;
+  els.fType.disabled = !gm;
+  els.fInit.disabled = !gm;
 
   const canAim = gm && current && curP && curP.type !== "enemy";
   els.btnAim.classList.toggle("hidden", !canAim);
@@ -515,11 +632,19 @@ function render() {
     const cls = ["row"];
     if (!alive) cls.push("dead");
     if (current && current.id === p.id) cls.push("current");
-    const hint = `${TYPE_LABEL[p.type]}` + (p.type === "enemy" ? `, Инициатива ${p.init}` : "");
+    const hint = TYPE_LABEL[p.type];
+    // Инициативу можно менять у персонажа (5.1.1) и врага (5.1.2);
+    // приспешнику она не нужна — у него всегда один жетон (5.4)
+    const editable = p.type === "pc" || p.type === "enemy";
+    const initBox = editable ? `
+      <span class="inil">иниц</span>
+      <input class="ini" type="number" min="1" max="99" step="1" value="${p.init}"
+             data-act="init" title="Инициатива: сколько жетонов даёт этот участник"
+             aria-label="Инициатива: ${esc(p.name)}" ${gm ? "" : "disabled"}>` : "";
     return `<li class="${cls.join(" ")}" style="--c:${participantColor(p)}" data-id="${p.id}">
       <span class="chip"></span>
       <span class="nm">${esc(p.name)}</span>
-      <span class="ty">${esc(hint)}</span>
+      <span class="ty">${esc(hint)}</span>${initBox}
       <span class="tk">${alive ? p.tokens : "—"} / ${tokensFor(Object.assign({}, p, { alive: true }))}</span>
       ${p.aiming ? `<button class="badge" data-act="aim" title="Снять прицел (6.2.2)">прицел</button>` : ""}
       <button class="ico" data-act="alive" title="${alive ? "Отметить выбывшим" : "Вернуть в бой"}">${alive ? "☠" : "↺"}</button>
@@ -578,22 +703,35 @@ function bindUI() {
   els.btnDraw.addEventListener("click", doDraw);
 
   els.btnCommit.addEventListener("click", () => act(commitTurn));
-  els.btnReturn.addEventListener("click", () => act(undoLast));
+  els.btnReturn.addEventListener("click", async () => {
+    const res = await act(returnToken);
+    if (res === null) toast("В истории нет записи о вытягивании");
+  });
   els.btnUndo.addEventListener("click", () => act(undoLast));
   els.btnNewRound.addEventListener("click", () => act(newRound));
   els.btnAim.addEventListener("click", () => act(toggleAim));
 
   els.banner.addEventListener("click", () => els.banner.classList.add("hidden"));
 
-  // Поле Инициативы нужно только врагам (5.1.2)
+  // Поле Инициативы нужно персонажам и врагам (5.1.1, 5.1.2);
+  // приспешнику — нет, у него всегда один жетон (5.4)
   const syncType = () => {
-    const isEnemy = els.fType.value === "enemy";
-    els.fInit.style.display = isEnemy ? "" : "none";
-    els.addNote.textContent = isEnemy
-      ? "Враг добавит столько жетонов, каково его значение Инициативы (5.1.2)."
-      : "Персонажам даётся 2 жетона, приспешникам — 1 (5.1.1, 5.4).";
+    const t = els.fType.value;
+    els.fInit.style.display = (t === "henchman") ? "none" : "";
+    els.fInit.title = t === "enemy"
+      ? "Значение Инициативы врага: сколько жетонов он даёт в Стек (5.1.2)"
+      : "Сколько жетонов получит персонаж — по умолчанию 2 (5.1.1)";
+    els.addNote.textContent =
+      t === "enemy"
+        ? "Враг добавит столько жетонов, каково его значение Инициативы (5.1.2)."
+        : t === "henchman"
+          ? "Приспешник даёт 1 жетон, Инициатива ему не нужна (5.4)."
+          : "Персонаж получит столько жетонов, какова его Инициатива — по умолчанию 2 (5.1.1).";
   };
-  els.fType.addEventListener("change", syncType);
+  els.fType.addEventListener("change", () => {
+    els.fInit.value = 2;   // новый тип — снова значение по умолчанию
+    syncType();
+  });
   syncType();
 
   const addFromForm = () => {
@@ -606,6 +744,30 @@ function bindUI() {
   };
   els.btnAdd.addEventListener("click", addFromForm);
   els.fName.addEventListener("keydown", (e) => { if (e.key === "Enter") addFromForm(); });
+
+  // Правка Инициативы прямо в строке участника
+  els.list.addEventListener("change", (e) => {
+    const inp = e.target.closest("input[data-act='init']");
+    if (!inp) return;
+    const id = inp.closest("li").dataset.id;
+    act((s) => {
+      const p = byId(s, id);
+      if (!p || (p.type !== "pc" && p.type !== "enemy")) return false;
+      const next = initValue(p.type, inp.value);
+      inp.value = next;                       // сразу показываем проверенное число
+      if (next === p.init) return false;
+      const old = p.init;
+      pushHistory(s, p.id, snapBefore(s, { init: [p.id], tokens: [p.id] }),
+                  `${p.name}: инициатива ${old} → ${next}`);
+      // Жетоны двигаем на разницу, а не заполняем заново: уже потраченный
+      // в этом раунде жетон не должен вернуться просто от правки числа.
+      const delta = next - old;
+      p.init = next;
+      p.tokens = Math.max(0, Math.min(tokensFor(p), p.tokens + delta));
+      logAdd(s, `${p.name}: инициатива ${old} → ${next} — жетонов ${p.tokens}`, "");
+      return true;
+    });
+  });
 
   // Кнопки внутри списка участников
   els.list.addEventListener("click", (e) => {
