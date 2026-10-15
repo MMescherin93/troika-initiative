@@ -13,7 +13,8 @@
      5.2    Ведущий вынимает жетон наугад — тот и ходит.
      5.3    Выпал Конец раунда → все жетоны возвращаются в Стек, раунд +1,
             убираются погибшие, разбираются эффекты (огонь, яд, кровотечение).
-     5.4    Приспешники дают по одному жетону, все одинаковые.
+     5.4    Приспешники дают по одному жетону, все одинаковые. Здесь тоже
+            можно задать своё значение Инициативы — по умолчанию 1.
      5.5    Вытянув жетон врага, Ведущий выбирает любого из них.
      6.2.2  Прицелившийся держит свой жетон: со второго жетона бросает
             кубики дважды и выбирает лучший результат.
@@ -94,20 +95,18 @@ function nowTime() {
   return new Date().toLocaleTimeString("ru-RU", { hour: "2-digit", minute: "2-digit" });
 }
 
-// Инициатива персонажа (5.1.1): по умолчанию 2. Пустое, нулевое или
-// мусорное значение считаем «не задано» — тогда действует двойка.
-function pcInit(v) {
-  const n = Number(v);
-  if (!Number.isFinite(n) || n < 1) return 2;
-  return Math.max(1, Math.min(99, Math.round(n)));
+// Значение Инициативы по умолчанию: персонажу и врагу — 2 (5.1.1, 5.1.2),
+// приспешнику — 1, ровно как в правилах (5.4).
+function defaultInit(type) {
+  return type === "henchman" ? 1 : 2;
 }
 
-// Инициатива участника зависит от типа: у персонажа — своя (по умолчанию 2),
-// у врага — заданная Ведущим (5.1.2), приспешнику она не нужна (5.4).
+// Инициатива участника: пустое, нулевое или мусорное значение считаем
+// «не задано» и подставляем значение по умолчанию. В остальных случаях — 1…99.
 function initValue(type, v) {
-  if (type === "pc") return pcInit(v);
-  if (v === "" || v === null || v === undefined) return 2;
-  return clampNum(v, 2, 1, 99);
+  const n = Number(v);
+  if (!Number.isFinite(n) || n < 1) return defaultInit(type);
+  return Math.max(1, Math.min(99, Math.round(n)));
 }
 
 // Русские числительные: 1 жетон, 2 жетона, 5 жетонов
@@ -244,12 +243,11 @@ function logAdd(s, text, kind) {
 
 /* ---------- 4. Правила: построение Стека --------------------------------- */
 
-// Сколько жетонов даёт этот участник (5.1.1, 5.1.2, 5.4)
+// Сколько жетонов даёт этот участник: ровно столько, какова его Инициатива —
+// у всех трёх типов теперь считается одинаково (5.1.1, 5.1.2, 5.4)
 function tokensFor(p) {
   if (!p.alive) return 0;
-  if (p.type === "pc") return pcInit(p.init);
-  if (p.type === "henchman") return 1;
-  return Math.max(0, Math.min(99, p.init));
+  return initValue(p.type, p.init);
 }
 
 // Пересобрать Стек для нового раунда (5.1 + 5.3)
@@ -582,7 +580,8 @@ function render() {
     } else if (curP.type === "enemy") {
       els.hint.innerHTML = "Жетон врага. <b>Ведущий выбирает любого</b> из врагов — даже того, кто уже ходил (5.5).";
     } else if (curP.type === "henchman") {
-      els.hint.innerHTML = "Жетон приспешника. <b>Ведущий выбирает, кто именно</b> из них ходит (5.4).";
+      els.hint.innerHTML = "Жетон приспешника. <b>Ведущий выбирает, кто именно</b> из них ходит (5.4). " +
+        "Жетонов столько, какова его Инициатива — обычно 1.";
     } else {
       els.hint.innerHTML = "Жетон персонажа — <b>свой цвет у каждого</b> (5.1.1). " +
         "Жетонов у него столько, какова Инициатива — обычно 2, и каждый даёт один ход.";
@@ -633,14 +632,13 @@ function render() {
     if (!alive) cls.push("dead");
     if (current && current.id === p.id) cls.push("current");
     const hint = TYPE_LABEL[p.type];
-    // Инициативу можно менять у персонажа (5.1.1) и врага (5.1.2);
-    // приспешнику она не нужна — у него всегда один жетон (5.4)
-    const editable = p.type === "pc" || p.type === "enemy";
-    const initBox = editable ? `
+    // Инициативу можно менять у любого участника: от неё зависит, сколько
+    // жетонов он даёт в Стек (5.1.1 персонажи, 5.1.2 враги, 5.4 приспешники)
+    const initBox = `
       <span class="inil">иниц</span>
       <input class="ini" type="number" min="1" max="99" step="1" value="${p.init}"
              data-act="init" title="Инициатива: сколько жетонов даёт этот участник"
-             aria-label="Инициатива: ${esc(p.name)}" ${gm ? "" : "disabled"}>` : "";
+             aria-label="Инициатива: ${esc(p.name)}" ${gm ? "" : "disabled"}>`;
     return `<li class="${cls.join(" ")}" style="--c:${participantColor(p)}" data-id="${p.id}">
       <span class="chip"></span>
       <span class="nm">${esc(p.name)}</span>
@@ -713,23 +711,25 @@ function bindUI() {
 
   els.banner.addEventListener("click", () => els.banner.classList.add("hidden"));
 
-  // Поле Инициативы нужно персонажам и врагам (5.1.1, 5.1.2);
-  // приспешнику — нет, у него всегда один жетон (5.4)
+  // Поле Инициативы есть у всех типов (5.1.1, 5.1.2, 5.4):
+  // у персонажа по умолчанию 2, у приспешника — 1, у врага — 2
   const syncType = () => {
     const t = els.fType.value;
-    els.fInit.style.display = (t === "henchman") ? "none" : "";
+    els.fInit.style.display = "";
     els.fInit.title = t === "enemy"
       ? "Значение Инициативы врага: сколько жетонов он даёт в Стек (5.1.2)"
-      : "Сколько жетонов получит персонаж — по умолчанию 2 (5.1.1)";
+      : t === "henchman"
+        ? "Сколько жетонов даст приспешник — по умолчанию 1 (5.4)"
+        : "Сколько жетонов получит персонаж — по умолчанию 2 (5.1.1)";
     els.addNote.textContent =
       t === "enemy"
         ? "Враг добавит столько жетонов, каково его значение Инициативы (5.1.2)."
         : t === "henchman"
-          ? "Приспешник даёт 1 жетон, Инициатива ему не нужна (5.4)."
+          ? "Приспешник даст столько жетонов, какова его Инициатива — по умолчанию 1 (5.4)."
           : "Персонаж получит столько жетонов, какова его Инициатива — по умолчанию 2 (5.1.1).";
   };
   els.fType.addEventListener("change", () => {
-    els.fInit.value = 2;   // новый тип — снова значение по умолчанию
+    els.fInit.value = defaultInit(els.fType.value);   // новый тип — своё значение по умолчанию
     syncType();
   });
   syncType();
@@ -752,7 +752,7 @@ function bindUI() {
     const id = inp.closest("li").dataset.id;
     act((s) => {
       const p = byId(s, id);
-      if (!p || (p.type !== "pc" && p.type !== "enemy")) return false;
+      if (!p) return false;
       const next = initValue(p.type, inp.value);
       inp.value = next;                       // сразу показываем проверенное число
       if (next === p.init) return false;
