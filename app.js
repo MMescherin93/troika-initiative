@@ -35,6 +35,7 @@
 
 const META_KEY = "com.troika.initiative/state"; // ключ в метаданных сцены
 const LOCAL_KEY = "troika-initiative/state";    // ключ в localStorage
+const STATE_V = 2;                              // версия формата сохранения
 const SDK_URL = "https://cdn.jsdelivr.net/npm/@owlbear-rodeo/sdk@3.1.0/+esm";
 const TIMEOUT_MS = 4000;                        // защита от зависших вызовов
 const MAX_HISTORY = 20;                         // сколько ходов можно отменить
@@ -121,7 +122,7 @@ function plural(n, one, few, many) {
 
 function newState() {
   return {
-    v: 1,
+    v: STATE_V,
     round: 1,
     participants: [],
     endLeft: true,     // Жетон Конца раунда ещё в Стеке
@@ -138,6 +139,11 @@ function sanitize(raw) {
   s.round = clampNum(raw.round, 1, 1, 9999);
   s.endLeft = raw.endLeft !== false;
 
+  // Сохранения старого формата (v < 2): поле Инициативы у приспешника тогда
+  // было скрыто и хранило число, зашедшее туда от другого типа. По правилам
+  // (5.4) приспешник давал 1 жетон — так и считаем.
+  const oldSave = !(Number(raw.v) >= STATE_V);
+
   if (Array.isArray(raw.participants)) {
     const used = new Set();
     raw.participants.forEach((src) => {
@@ -151,7 +157,7 @@ function sanitize(raw) {
         id,
         name: asText(src.name, "Без имени", 40),
         type,
-        init: initValue(type, src.init),
+        init: initValue(type, (oldSave && type === "henchman") ? 1 : src.init),
         alive: src.alive !== false,
         aiming: src.aiming === true,
         color: asText(src.color, "", 20) || colorFor(type, s.participants.length),
