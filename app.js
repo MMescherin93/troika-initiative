@@ -473,7 +473,7 @@ function addParticipant(s, name, type, init) {
 /* ---------- 6. Хранилище -------------------------------------------------- */
 
 const mode = { obr: false, gm: true, connecting: true };
-
+let lastSavedJson = null; // чтобы не перетирать своё же сохранение при onMetadataChange
 // Находимся ли мы во встроенном окне (iframe Owlbear Rodeo)
 const embedded = (function () {
   try { return window.self !== window.top; } catch { return true; }
@@ -497,8 +497,12 @@ async function loadState() {
   if (mode.obr) {
     try {
       const meta = await withTimeout(OBR.scene.getMetadata(), TIMEOUT_MS, null);
-      const raw = meta && meta[META_KEY];
-      return raw ? sanitize(raw) : newState();
+      const raw = meta && (meta[META_KEY] || (meta.items && meta.items[META_KEY]));
+      if (raw) {
+        try { lastSavedJson = JSON.stringify(raw); } catch {}
+        return sanitize(raw);
+      }
+      return newState();
     } catch (e) {
       console.warn("[стек] Не удалось прочитать метаданные сцены:", e);
       return newState();
@@ -516,13 +520,19 @@ async function persist() {
   if (mode.obr) {
     if (!mode.gm) return;            // игроки только смотрят
     try {
+      const json = JSON.stringify(state);
+      lastSavedJson = json;
       await withTimeout(OBR.scene.setMetadata({ [META_KEY]: state }), TIMEOUT_MS, null);
     } catch (e) {
       console.warn("[стек] Не удалось сохранить состояние:", e);
       toast("Не удалось сохранить состояние в сцене");
     }
   } else {
-    try { localStorage.setItem(LOCAL_KEY, JSON.stringify(state)); } catch { /* переполнение */ }
+    try { 
+      const json = JSON.stringify(state);
+      lastSavedJson = json;
+      localStorage.setItem(LOCAL_KEY, json); 
+    } catch { /* переполнение */ }
   }
 }
 
@@ -936,8 +946,13 @@ async function connectOBR() {
       try {
         if (typeof OBR.scene.onMetadataChange === "function") {
           OBR.scene.onMetadataChange((meta) => {
-            const raw = meta && meta[META_KEY];
+            const raw = meta && (meta[META_KEY] || (meta.items && meta.items[META_KEY]));
             if (!raw) return;
+            try {
+              const incoming = JSON.stringify(raw);
+              if (lastSavedJson && incoming === lastSavedJson) return;
+              lastSavedJson = incoming;
+            } catch { /* игнор */ }
             state = sanitize(raw);
             render();
           });
