@@ -472,8 +472,28 @@ function addParticipant(s, name, type, init) {
 
 /* ---------- 6. Хранилище -------------------------------------------------- */
 
-const mode = { obr: false, gm: true, connecting: true };
+const mode = { obr: false, gm: true, role: null, connecting: true };
 let lastSavedJson = null; // чтобы не перетирать своё же сохранение при onMetadataChange
+
+// Надёжное определение роли. OBR иногда отвечает не с первого раза
+// (getRole может упасть или вернуть пустое значение сразу после onReady),
+// поэтому пробуем несколько раз. null — роль так и не удалось узнать.
+async function detectRole(attempts = 5) {
+  for (let i = 0; i < attempts; i++) {
+    try {
+      if (OBR && OBR.player && typeof OBR.player.getRole === "function") {
+        const role = await withTimeout(
+          Promise.resolve().then(() => OBR.player.getRole()),
+          2500,
+          null
+        );
+        if (role === "GM" || role === "PLAYER") return role;
+      }
+    } catch (e) { /* пробуем ещё раз */ }
+    if (i < attempts - 1) await new Promise((r) => setTimeout(r, 700));
+  }
+  return null;
+}
 // Находимся ли мы во встроенном окне (iframe Owlbear Rodeo)
 const embedded = (function () {
   try { return window.self !== window.top; } catch { return true; }
@@ -580,7 +600,9 @@ function render() {
       : "автономный режим · сохраняется в браузере";
   }
   else if (gm) els.mode.textContent = "Ведущий · состояние видно игрокам";
-  else els.mode.textContent = "только просмотр · управляет Ведущий";
+  else els.mode.textContent = "только просмотр · вы вошли как игрок";
+  // Подсказка для диагностики: какую роль реально видит расширение
+  els.mode.title = "роль в Owlbear: " + (mode.role || "неизвестна");
 
   // --- вытянутый жетон ---
   if (curP) {
@@ -925,19 +947,31 @@ async function connectOBR() {
 
       // Роль и состояние сцены запрашиваем одновременно: так панель
       // подключается вдвое быстрее.
-      const [role, remote] = await Promise.all([
-        withTimeout(Promise.resolve().then(() => OBR.player.getRole()), TIMEOUT_MS, "PLAYER"),
-        loadState(),
-      ]);
-      mode.gm = role === "GM";
+      const [role, remote] = await Promise.all([detectRole(3), loadState()]);
+      mode.role = role;
+      // Если роль узнать не удалось — не запираем интерфейс:
+      // считаем себя Ведущим и перепроверяем роль чуть позже.
+      mode.gm = role === null ? true : role === "GM";
+
+      // Поздняя перепроверка: OBR бывает отдаёт роль не сразу после onReady
+      setTimeout(async () => {
+        const again = await detectRole(3);
+        if (!again) return;
+        mode.role = again;
+        mode.gm = again === "GM";
+        render();
+      }, 1500);
 
       // Если Ведущего разжаловали в игрока — сразу блокируем кнопки
       try {
         if (typeof OBR.player.onChange === "function") {
           OBR.player.onChange((p) => {
-            if (!p || !p.role) return;
-            mode.gm = p.role === "GM";
-            render();
+            if (!p) return;
+            if (p.role === "GM" || p.role === "PLAYER") {
+              mode.role = p.role;
+              mode.gm = p.role === "GM";
+              render();
+            }
           });
         }
       } catch (e) { console.warn("[стек] не подписались на смену роли:", e); }
